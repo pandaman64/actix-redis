@@ -19,10 +19,13 @@ extern crate log;
 extern crate redis_async;
 #[macro_use]
 extern crate failure;
+extern crate rand;
 extern crate time;
 
 mod redis;
+mod redis_cluster;
 pub use redis::{Command, RedisActor};
+pub use redis_cluster::RedisClusterActor;
 
 #[cfg(feature = "web")]
 extern crate actix_web;
@@ -30,8 +33,6 @@ extern crate actix_web;
 extern crate cookie;
 #[cfg(feature = "web")]
 extern crate http;
-#[cfg(feature = "web")]
-extern crate rand;
 #[cfg(feature = "web")]
 extern crate serde;
 #[cfg(feature = "web")]

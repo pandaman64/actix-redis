@@ -24,7 +24,7 @@ codecov = { repository = "actix/actix-redis", branch = "master", service = "gith
 default = ["web"]
 
 # actix-web integration
-web = ["actix-web", "cookie", "http", "rand", "serde", "serde_json"]
+web = ["actix-web", "cookie", "http", "serde", "serde_json"]
 
 [dependencies]
 actix = "0.7"
@@ -38,12 +38,12 @@ tokio-codec = "0.1"
 tokio-tcp = "0.1"
 redis-async = "0.4"
 time = "0.1"
+rand = "0.5"
 
 # actix web session
 actix-web = { version = "^0.7.3", optional=true }
 cookie = { version="0.11", features=["percent-encode", "secure"], optional=true }
 http = { version="0.1", optional=true }
-rand = { version="0.5", optional=true }
 serde = { version="1.0", optional=true }
 serde_json = { version="1.0", optional=true }
 

@@ -17,6 +17,7 @@ use serde_json;
 use time::Duration;
 
 use redis::{Command, RedisActor};
+use redis_cluster::RedisClusterActor;
 
 /// Session that stores data in redis
 pub struct RedisSession {
@@ -76,7 +77,26 @@ impl RedisSessionBackend {
         RedisSessionBackend(Rc::new(Inner {
             key: Key::from_master(key),
             ttl: "7200".to_owned(),
-            addr: RedisActor::start(addr),
+            addr: Provider::Redis(RedisActor::start(addr)),
+            name: "actix-session".to_owned(),
+            path: "/".to_owned(),
+            domain: None,
+            secure: false,
+            max_age: Some(Duration::days(7)),
+            same_site: None,
+        }))
+    }
+
+    /// Create new redis session backend with Redis Cluster
+    ///
+    /// * `addrs` - addresses of the master nodes of the redis cluster
+    pub fn new_cluster<S: IntoIterator<Item = String>>(
+        addrs: S, key: &[u8],
+    ) -> RedisSessionBackend {
+        RedisSessionBackend(Rc::new(Inner {
+            key: Key::from_master(key),
+            ttl: "7200".to_owned(),
+            addr: Provider::RedisCluster(RedisClusterActor::start(addrs)),
             name: "actix-session".to_owned(),
             path: "/".to_owned(),
             domain: None,
@@ -158,10 +178,26 @@ impl<S> SessionBackend<S> for RedisSessionBackend {
     }
 }
 
+enum Provider {
+    Redis(Addr<RedisActor>),
+    RedisCluster(Addr<RedisClusterActor>),
+}
+
+impl Provider {
+    fn send(
+        &self, msg: Command,
+    ) -> Box<Future<Item = Result<RespValue, super::Error>, Error = MailboxError>> {
+        match self {
+            Provider::Redis(this) => Box::new(this.send(msg)),
+            Provider::RedisCluster(this) => Box::new(this.send(msg)),
+        }
+    }
+}
+
 struct Inner {
     key: Key,
     ttl: String,
-    addr: Addr<RedisActor>,
+    addr: Provider,
     name: String,
     path: String,
     domain: Option<String>,
