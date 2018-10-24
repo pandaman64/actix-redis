@@ -17,7 +17,7 @@ use tokio_tcp::TcpStream;
 use Error;
 
 /// Command for send data to Redis
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct Command(pub RespValue);
 
 impl Message for Command {
