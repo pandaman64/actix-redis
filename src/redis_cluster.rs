@@ -5,6 +5,18 @@ use super::{Command, Error, RedisActor, RespValue};
 use actix::prelude::*;
 use futures::prelude::*;
 
+struct Moved(RespValue, String);
+
+impl Message for Moved {
+    type Result = Result<RespValue, Error>;
+}
+
+struct Ask(RespValue, String);
+
+impl Message for Ask {
+    type Result = Result<RespValue, Error>;
+}
+
 pub struct RedisClusterActor {
     initial_nodes: Vec<String>,
     nodes: HashMap<String, Addr<RedisActor>>,
@@ -48,10 +60,98 @@ impl Supervised for RedisClusterActor {
     }
 }
 
+fn handle_response(
+    req: RespValue, res: Result<RespValue, Error>, actor: &mut RedisClusterActor,
+    ctx: &mut Context<RedisClusterActor>,
+) -> Box<ActorFuture<Item = RespValue, Error = Error, Actor = RedisClusterActor>> {
+    match res {
+        Ok(RespValue::Error(ref err)) if err.starts_with("MOVED") => {
+            let mut values = err.split(' ');
+            let _moved = values.next().unwrap();
+            // TODO: add slot to slot table
+            let _slot = values.next().unwrap();
+            let node = values.next().unwrap();
+
+            Box::new(
+                ctx.address()
+                    .send(Moved(req, node.into()))
+                    .map_err(|_| Error::Disconnected)
+                    .and_then(|res| res)
+                    .into_actor(actor),
+            )
+        }
+        Ok(RespValue::Error(ref err)) if err.starts_with("ASK") => {
+            let mut values = err.split(' ');
+            let _ask = values.next().unwrap();
+            let _slot = values.next().unwrap();
+            let node = values.next().unwrap();
+
+            Box::new(
+                ctx.address()
+                    .send(Ask(req, node.into()))
+                    .map_err(|_| Error::Disconnected)
+                    .and_then(|res| res)
+                    .into_actor(actor),
+            )
+        }
+        _ => Box::new(res.into_future().into_actor(actor)),
+    }
+}
+
+impl Handler<Moved> for RedisClusterActor {
+    type Result = ResponseActFuture<Self, RespValue, Error>;
+
+    fn handle(&mut self, moved: Moved, _: &mut Self::Context) -> Self::Result {
+        let command = moved.0;
+        let node = moved.1;
+        match self.nodes.get(&node) {
+            Some(node) => Box::new(
+                node.send(Command(command.clone()))
+                    .map_err(|_| Error::Disconnected)
+                    .into_actor(self)
+                    .and_then(|res, actor, ctx| {
+                        handle_response(command, res, actor, ctx)
+                    }),
+            ),
+            None => unimplemented!(),
+        }
+    }
+}
+
+// TODO: test
+impl Handler<Ask> for RedisClusterActor {
+    type Result = ResponseActFuture<Self, RespValue, Error>;
+
+    fn handle(&mut self, ask: Ask, _: &mut Self::Context) -> Self::Result {
+        let command = ask.0;
+        let node = ask.1;
+        match self.nodes.get(&node) {
+            Some(node) => {
+                let node2 = node.clone();
+                let command2 = command.clone();
+                Box::new(
+                    // TODO: other request might come between ASKING and the command
+                    node.send(Command(resp_array!("ASKING")))
+                        .map_err(|_| Error::Disconnected)
+                        .and_then(move |_| {
+                            node2
+                                .send(Command(command))
+                                .map_err(|_| Error::Disconnected)
+                        })
+                        .into_actor(self)
+                        .and_then(|res, actor, ctx| {
+                            handle_response(command2, res, actor, ctx)
+                        }),
+                )
+            }
+            None => unimplemented!(),
+        }
+    }
+}
+
 impl Handler<Command> for RedisClusterActor {
     type Result = ResponseActFuture<Self, RespValue, Error>;
 
-    // TODO: loop
     fn handle(&mut self, msg: Command, _: &mut Self::Context) -> Self::Result {
         use actix::fut::ActorFuture;
         let node = self.pick_random_node().clone();
@@ -60,59 +160,7 @@ impl Handler<Command> for RedisClusterActor {
             node.send(msg.clone())
                 .map_err(|_| Error::Disconnected)
                 .into_actor(self)
-                .and_then(
-                    |res,
-                     this,
-                     _ctx|
-                     -> Box<
-                        ActorFuture<Item = RespValue, Error = Error, Actor = Self>,
-                    > {
-                        match res {
-                            Ok(RespValue::Error(ref err))
-                                if err.starts_with("MOVED") =>
-                            {
-                                let mut values = err.split(' ');
-                                let _moved = values.next().unwrap();
-                                let _slot = values.next().unwrap();
-                                let node = values.next().unwrap();
-
-                                match this.nodes.get(node) {
-                                    Some(node) => Box::new(
-                                        node.send(msg)
-                                            .map_err(|_| Error::Disconnected)
-                                            .and_then(|res| res)
-                                            .into_actor(this),
-                                    ),
-                                    None => unimplemented!(),
-                                }
-                            }
-                            _ => Box::new(res.into_future().into_actor(this)),
-                        }
-                    },
-                ),
+                .and_then(|res, actor, ctx| handle_response(msg.0, res, actor, ctx)),
         )
-
-        /*
-        use futures::future::loop_fn;
-        use futures::future::Loop;
-        Box::new(loop_fn(node.clone(),move |node| {
-            node.send(msg)
-                .map_err(|_| Error::Disconnected)
-                .map(|res| match res {
-                    Ok(RespValue::Error(ref err)) if err.starts_with("MOVED") => {
-                        let values = err.split(' ');
-                        let _moved = values.next().unwrap();
-                        let _slot = values.next().unwrap();
-                        let node = values.next().unwrap();
-        
-                        match self.nodes.get(node) {
-                            Some(node) => Loop::Continue(node.clone()),
-                            None => unimplemented!(),
-                        }
-                    },
-                    _ => Loop::Break(res),
-                })
-        }).and_then(|res| res).into_actor(self))
-        */
     }
 }
