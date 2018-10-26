@@ -24,6 +24,7 @@ extern crate time;
 
 mod redis;
 mod redis_cluster;
+mod slot;
 pub use redis::{Command, RedisActor};
 pub use redis_cluster::RedisClusterActor;
 

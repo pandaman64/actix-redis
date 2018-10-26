@@ -1,6 +1,8 @@
 use std::collections::HashMap;
 
 use super::{Command, Error, RedisActor, RespValue};
+use ::redis_async::resp::FromResp;
+use ::redis_async::error::Error as RedisError;
 
 use actix::prelude::*;
 use futures::prelude::*;
@@ -17,9 +19,59 @@ impl Message for Ask {
     type Result = Result<RespValue, Error>;
 }
 
+#[derive(Debug, PartialEq, Eq, PartialOrd, Ord)]
+struct Slot {
+    start: usize,
+    end: usize,
+    /// master node
+    /// currently, post request only to masters (not allowing read from stale slaves)
+    master: (String, usize),
+}
+
+fn resp_to_node(res: RespValue) -> Result<(String, usize), RedisError> {
+    if let RespValue::Array(node) = res {
+        if node.len() < 2 {
+            return Err(RedisError::RESP("A redis node must contain 2 elements".into(), Some(RespValue::Array(node))));
+        }
+
+        let mut iter = node.into_iter();
+        let addr = String::from_resp(iter.next().unwrap())?;
+        let port = usize::from_resp(iter.next().unwrap())?;
+
+        Ok((addr, port))
+    } else {
+        Err(RedisError::RESP("A redis node must be array".into(), Some(res)))
+    }
+}
+
+impl FromResp for Slot {
+    fn from_resp_int(res: RespValue) -> Result<Self, RedisError> {
+        if let RespValue::Array(slot) = res {
+            if slot.len() < 3 {
+                return Err(RedisError::RESP("A hash slot must contain at least 3 elements".into(), Some(RespValue::Array(slot))));
+            }
+
+            let mut iter = slot.into_iter();
+            let start = usize::from_resp(iter.next().unwrap())?;
+            let end = usize::from_resp(iter.next().unwrap())?;
+            let master = resp_to_node(iter.next().unwrap())?;
+
+            Ok(Slot {
+                start,
+                end,
+                master,
+            })
+        } else {
+            Err(RedisError::RESP("A hash slot must be an array".into(), Some(res)))
+        }
+    }
+}
+
 pub struct RedisClusterActor {
     initial_nodes: Vec<String>,
     nodes: HashMap<String, Addr<RedisActor>>,
+    need_refresh_slots: bool,
+    slots: Vec<Slot>,
 }
 
 impl RedisClusterActor {
@@ -27,6 +79,8 @@ impl RedisClusterActor {
         Supervisor::start(|_| RedisClusterActor {
             initial_nodes: addrs,
             nodes: HashMap::new(),
+            need_refresh_slots: true,
+            slots: vec![],
         })
     }
 
@@ -42,7 +96,7 @@ impl RedisClusterActor {
 impl Actor for RedisClusterActor {
     type Context = Context<Self>;
 
-    fn started(&mut self, _: &mut Context<Self>) {
+    fn started(&mut self, ctx: &mut Context<Self>) {
         for initial_node in self.initial_nodes.iter() {
             self.nodes.insert(
                 initial_node.clone(),
@@ -50,7 +104,24 @@ impl Actor for RedisClusterActor {
             );
         }
 
-        // TODO: retrieve CLUSTER NODES
+        let node = self.pick_random_node();
+        ctx.spawn(
+            node.send(Command(resp_array!["CLUSTER", "SLOTS"]))
+                .into_actor(self)
+                .and_then(|res, this, _ctx| {
+                    debug!("cluster nodes: {:?}", res);
+                    match res {
+                        Ok(RespValue::Array(slots)) => {
+                            this.slots = slots.into_iter().filter_map(|slot| Slot::from_resp(slot).ok()).collect();
+                            this.need_refresh_slots = false;
+                        },
+                        Err(_) => {},
+                        _ => unimplemented!(),
+                    };
+                    Ok(()).into_future().into_actor(this)
+                })
+                .drop_err()
+        );
     }
 }
 
@@ -66,6 +137,9 @@ fn handle_response(
 ) -> Box<ActorFuture<Item = RespValue, Error = Error, Actor = RedisClusterActor>> {
     match res {
         Ok(RespValue::Error(ref err)) if err.starts_with("MOVED") => {
+            info!("MOVED redirection: {:?}", req);
+            actor.need_refresh_slots = true;
+
             let mut values = err.split(' ');
             let _moved = values.next().unwrap();
             // TODO: add slot to slot table
@@ -81,6 +155,7 @@ fn handle_response(
             )
         }
         Ok(RespValue::Error(ref err)) if err.starts_with("ASK") => {
+            info!("ASK redirection: {:?}", req);
             let mut values = err.split(' ');
             let _ask = values.next().unwrap();
             let _slot = values.next().unwrap();
