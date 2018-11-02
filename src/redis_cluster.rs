@@ -21,10 +21,10 @@ impl Message for Ask {
 
 #[derive(Debug, PartialEq, Eq, PartialOrd, Ord)]
 struct Slot {
-    start: usize,
-    end: usize,
+    start: u16,
+    end: u16,
     /// master node
-    /// currently, post request only to masters (not allowing read from stale slaves)
+    /// currently, post requests only to masters (not allowing read from stale slaves)
     master: (String, usize),
 }
 
@@ -52,8 +52,9 @@ impl FromResp for Slot {
             }
 
             let mut iter = slot.into_iter();
-            let start = usize::from_resp(iter.next().unwrap())?;
-            let end = usize::from_resp(iter.next().unwrap())?;
+            // TODO: handle out of range
+            let start = i64::from_resp(iter.next().unwrap())? as u16;
+            let end = i64::from_resp(iter.next().unwrap())? as u16;
             let master = resp_to_node(iter.next().unwrap())?;
 
             Ok(Slot {
@@ -91,6 +92,20 @@ impl RedisClusterActor {
             Err(_) => unimplemented!(),
         }
     }
+
+    fn pick_node_by_key(&self, key: &[u8]) -> Option<&Addr<RedisActor>> {
+        let key_slot = ::slot::hash_slot(key);
+
+        // TODO: binary search slots
+        for slot in self.slots.iter() {
+            if slot.start <= key_slot && key_slot <= slot.end {
+                // TODO: handle address and port in better way
+                return self.nodes.get(&format!("{}:{}", slot.master.0, slot.master.1));
+            }
+        }
+
+        None
+    }
 }
 
 impl Actor for RedisClusterActor {
@@ -113,6 +128,7 @@ impl Actor for RedisClusterActor {
                     match res {
                         Ok(RespValue::Array(slots)) => {
                             this.slots = slots.into_iter().filter_map(|slot| Slot::from_resp(slot).ok()).collect();
+                            info!("slots: {:?}", this.slots);
                             this.need_refresh_slots = false;
                         },
                         Err(_) => {},
