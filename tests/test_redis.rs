@@ -1,12 +1,10 @@
 extern crate actix;
 extern crate actix_redis;
-#[macro_use]
-extern crate redis_async;
 extern crate env_logger;
 extern crate futures;
 
 use actix::prelude::*;
-use actix_redis::{Command, Error, RedisActor, RespValue};
+use actix_redis::{command::*, Error, RedisActor, RespValue};
 use futures::Future;
 
 #[test]
@@ -17,7 +15,7 @@ fn test_error_connect() {
     let _addr2 = addr.clone();
 
     Arbiter::spawn_fn(move || {
-        addr.send(Command(resp_array!["GET", "test"])).then(|res| {
+        addr.send(Get { key: "test".into() }).then(|res| {
             match res {
                 Ok(Err(Error::NotConnected)) => (),
                 _ => panic!("Should not happen {:?}", res),
@@ -40,27 +38,31 @@ fn test_redis() {
 
     Arbiter::spawn_fn(move || {
         let addr2 = addr.clone();
-        addr.send(Command(resp_array!["SET", "test", "value"]))
-            .then(move |res| match res {
-                Ok(Ok(resp)) => {
-                    assert_eq!(resp, RespValue::SimpleString("OK".to_owned()));
-                    addr2.send(Command(resp_array!["GET", "test"])).then(|res| {
-                        match res {
-                            Ok(Ok(resp)) => {
-                                println!("RESP: {:?}", resp);
-                                assert_eq!(
-                                    resp,
-                                    RespValue::BulkString((&b"value"[..]).into())
-                                );
-                            }
-                            _ => panic!("Should not happen {:?}", res),
+        addr.send(Set {
+            key: "test".into(),
+            value: "value".into(),
+            expiration: Expiration::Infinite,
+        })
+        .then(move |res| match res {
+            Ok(Ok(resp)) => {
+                assert_eq!(resp, RespValue::SimpleString("OK".to_owned()));
+                addr2.send(Get { key: "test".into() }).then(|res| {
+                    match res {
+                        Ok(Ok(resp)) => {
+                            println!("RESP: {:?}", resp);
+                            assert_eq!(
+                                resp,
+                                RespValue::BulkString((&b"value"[..]).into())
+                            );
                         }
-                        System::current().stop();
-                        Ok(())
-                    })
-                }
-                _ => panic!("Should not happen {:?}", res),
-            })
+                        _ => panic!("Should not happen {:?}", res),
+                    }
+                    System::current().stop();
+                    Ok(())
+                })
+            }
+            _ => panic!("Should not happen {:?}", res),
+        })
     });
 
     sys.run();

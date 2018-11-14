@@ -21,8 +21,9 @@ extern crate redis_async;
 extern crate failure;
 extern crate time;
 
+pub mod command;
 mod redis;
-pub use redis::{Command, RedisActor};
+pub use redis::RedisActor;
 
 #[cfg(feature = "web")]
 extern crate actix_web;

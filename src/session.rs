@@ -16,7 +16,8 @@ use redis_async::resp::RespValue;
 use serde_json;
 use time::Duration;
 
-use redis::{Command, RedisActor};
+use command::{Expiration, Get, Set};
+use redis::RedisActor;
 
 /// Session that stores data in redis
 pub struct RedisSession {
@@ -185,7 +186,10 @@ impl Inner {
                         let value = cookie.value().to_owned();
                         return Box::new(
                             self.addr
-                                .send(Command(resp_array!["GET", cookie.value()]))
+                                //.send(Command(resp_array!["GET", cookie.value()]))
+                                .send(Get {
+                                    key: cookie.value().into(),
+                                })
                                 .map_err(Error::from)
                                 .and_then(move |res| match res {
                                     Ok(val) => {
@@ -267,7 +271,12 @@ impl Inner {
             Err(e) => Either::A(FutErr(e.into())),
             Ok(body) => Either::B(
                 self.addr
-                    .send(Command(resp_array!["SET", value, body, "EX", &self.ttl]))
+                    //.send(Command(resp_array!["SET", value, body, "EX", &self.ttl]))
+                    .send(Set {
+                        key: value,
+                        value: body,
+                        expiration: Expiration::Ex(self.ttl.clone()),
+                    })
                     .map_err(Error::from)
                     .and_then(move |res| match res {
                         Ok(_) => {
