@@ -132,11 +132,15 @@ impl RedisActor {
 
 impl<M> Handler<M> for RedisActor
 where
-    M: IntoRespValue + Message<Result = Result<RespValue, Error>>,
+    M: Command + Message<Result = Result<<M as Command>::Output, Error>>,
+    <M as Command>::Output: Send + 'static,
 {
-    type Result = ResponseFuture<RespValue, Error>;
+    type Result = ResponseFuture<M::Output, Error>;
 
     fn handle(&mut self, msg: M, _: &mut Self::Context) -> Self::Result {
-        self.send(msg.into_resp())
+        Box::new(
+            self.send(msg.into_request())
+                .and_then(|res| M::from_response(res).map_err(Error::Redis))
+        )
     }
 }

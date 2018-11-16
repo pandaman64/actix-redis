@@ -12,7 +12,6 @@ use futures::Future;
 use http::header::{self, HeaderValue};
 use rand::distributions::Alphanumeric;
 use rand::{self, Rng};
-use redis_async::resp::RespValue;
 use serde_json;
 use time::Duration;
 
@@ -186,36 +185,19 @@ impl Inner {
                         let value = cookie.value().to_owned();
                         return Box::new(
                             self.addr
-                                //.send(Command(resp_array!["GET", cookie.value()]))
                                 .send(Get {
                                     key: cookie.value().into(),
                                 })
                                 .map_err(Error::from)
                                 .and_then(move |res| match res {
-                                    Ok(val) => {
-                                        match val {
-                                            RespValue::Error(err) => {
-                                                return Err(
-                                                    error::ErrorInternalServerError(err),
-                                                )
-                                            }
-                                            RespValue::SimpleString(s) => {
-                                                if let Ok(val) = serde_json::from_str(&s)
-                                                {
-                                                    return Ok(Some((val, value)));
-                                                }
-                                            }
-                                            RespValue::BulkString(s) => {
-                                                if let Ok(val) =
-                                                    serde_json::from_slice(&s)
-                                                {
-                                                    return Ok(Some((val, value)));
-                                                }
-                                            }
-                                            _ => (),
+                                    Ok(Some(s)) => {
+                                        if let Ok(val) = serde_json::from_slice(&s) {
+                                            Ok(Some((val, value)))
+                                        } else {
+                                            Ok(None)
                                         }
-                                        Ok(None)
                                     }
+                                    Ok(None) => Ok(None),
                                     Err(err) => {
                                         Err(error::ErrorInternalServerError(err))
                                     }
@@ -271,7 +253,6 @@ impl Inner {
             Err(e) => Either::A(FutErr(e.into())),
             Ok(body) => Either::B(
                 self.addr
-                    //.send(Command(resp_array!["SET", value, body, "EX", &self.ttl]))
                     .send(Set {
                         key: value,
                         value: body,

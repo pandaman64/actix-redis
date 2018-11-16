@@ -4,7 +4,7 @@ extern crate env_logger;
 extern crate futures;
 
 use actix::prelude::*;
-use actix_redis::{command::*, Error, RedisActor, RespValue};
+use actix_redis::{command::*, Error, RedisActor};
 use futures::Future;
 
 #[test]
@@ -44,23 +44,16 @@ fn test_redis() {
             expiration: Expiration::Infinite,
         })
         .then(move |res| match res {
-            Ok(Ok(resp)) => {
-                assert_eq!(resp, RespValue::SimpleString("OK".to_owned()));
-                addr2.send(Get { key: "test".into() }).then(|res| {
-                    match res {
-                        Ok(Ok(resp)) => {
-                            println!("RESP: {:?}", resp);
-                            assert_eq!(
-                                resp,
-                                RespValue::BulkString((&b"value"[..]).into())
-                            );
-                        }
-                        _ => panic!("Should not happen {:?}", res),
+            Ok(Ok(())) => addr2.send(Get { key: "test".into() }).then(|res| {
+                match res {
+                    Ok(Ok(Some(resp))) => {
+                        assert_eq!(resp, b"value");
                     }
-                    System::current().stop();
-                    Ok(())
-                })
-            }
+                    _ => panic!("Should not happen {:?}", res),
+                }
+                System::current().stop();
+                Ok(())
+            }),
             _ => panic!("Should not happen {:?}", res),
         })
     });
